@@ -1,0 +1,20 @@
+Tie::SymlinkTree Version 0.1
+============================
+
+Read 'perldoc Tie::SymlinkTree' for details.
+
+INSTALLATION
+
+To install this module type the following:
+
+   perl Makefile.PL
+   make
+   make test
+   make install
+
+COPYRIGHT AND LICENCE
+
+This module is distributed under the same terms as perl itself.
+
+Copyright (C) 2004 Jörg Walter <jwalt@cpan.org>
+
