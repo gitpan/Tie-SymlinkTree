@@ -1,7 +1,13 @@
-Tie::SymlinkTree Version 0.1
+Tie::SymlinkTree Version 1.0
 ============================
 
-Read 'perldoc Tie::SymlinkTree' for details.
+This package started out as a simple persistant storage module, but
+it's scope has broadened a bit: The included Tie::Indexer is a
+generic module for searching through nested hashes and speeding up
+these searches via on-disk hashes, it is not limited to
+Tie::SymlinkTree.
+
+Read 'perldoc Tie::SymlinkTree' and/or 'perldoc Tie::Indexer' for details.
 
 INSTALLATION
 
@@ -16,5 +22,5 @@ COPYRIGHT AND LICENCE
 
 This module is distributed under the same terms as perl itself.
 
-Copyright (C) 2004 J�rg Walter <jwalt@cpan.org>
+Copyright (C) 2004 JÃ¶rg Walter <jwalt@cpan.org>
 

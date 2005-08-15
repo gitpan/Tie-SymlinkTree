@@ -1,8 +1,10 @@
 package Tie::SymlinkTree;
 use strict;
 use bytes;
+use Encode;
+use Tie::Indexer;
 
-our $VERSION = 0.1;
+our $VERSION = '1.0';
 
 {
     package Tie::SymlinkTree::Array;
@@ -14,6 +16,54 @@ our $VERSION = 0.1;
     package Tie::SymlinkTree::Hash;
     sub id { tied(%{shift()})->id(@_) }
     sub search { tied(%{shift()})->search(@_) }
+}
+
+sub encode_value {
+  no bytes;
+  my $val = shift;
+  return undef if !defined $val;
+  $val =~ s#\x{feff}#\x{feff}feff#g;
+  $val =~ s#\x{0000}#\x{feff}0000#g;
+  $val = "\x{feff}" if (length($val) == 0);
+  $val = encode_utf8($val);
+  return $val;
+}
+
+sub decode_value {
+  no bytes;
+  my $val = shift;
+  return undef if !defined $val;
+  $val = decode_utf8($val);
+  $val = "" if ($val eq "\x{feff}");
+  $val =~ s#\x{feff}0000#\x{0000}#g;
+  $val =~ s#\x{feff}feff#\x{feff}#g;
+  return $val;
+}
+
+sub encode_key {
+  no bytes;
+  my $key = shift;
+  return undef if !defined $key;
+  $key =~ s#\x{feff}#\x{feff}feff#g;
+  $key =~ s#\x{0000}#\x{feff}0000#g;
+  $key =~ s#/#\x{feff}002f#g;
+  $key =~ s#^\.#\x{feff}002e#g;
+  $key = "\x{feff}" if (length($key) == 0);
+  $key = encode_utf8($key);
+  return $key;
+}
+
+sub decode_key {
+  no bytes;
+  my $key = shift;
+  return undef if !defined $key;
+  $key = decode_utf8($key);
+  $key = "" if ($key eq "\x{feff}");
+  $key =~ s#\x{feff}002e#.#g;
+  $key =~ s#\x{feff}002f#/#g;
+  $key =~ s#\x{feff}0000#\x{0000}#g;
+  $key =~ s#\x{feff}feff#\x{feff}#g;
+  return $key;
 }
 
 sub TIEARRAY {
@@ -43,87 +93,106 @@ sub TIEHASH {
 
 sub FETCH {
   my ($self, $key) = @_;
-  $key =~ s#/#_#g;
-  $key =~ s#^\.#_#g;
+  $key = encode_key($key);
   if (-d $self->{PATH}.$key) {
 	if (-e $self->{PATH}.$key."/.array") {
 	    my @tmp;
-	    tie @tmp, 'Tie::SymlinkTree', $self->{PATH}.$key;
+	    tie @tmp, ref($self), $self->{PATH}.$key;
 	    return bless \@tmp, 'Tie::SymlinkTree::Array';
 	} else {
 	    my %tmp;
-	    tie %tmp, 'Tie::SymlinkTree', $self->{PATH}.$key;
+	    tie %tmp, ref($self), $self->{PATH}.$key;
 	    return bless \%tmp, 'Tie::SymlinkTree::Hash';
 	}
   } else {
-	return readlink($self->{PATH}.$key);
+	return decode_value(readlink($self->{PATH}.$key));
   }
 }
 
 
 sub STORE {
-    my ($self, $key, $val,$recursion) = @_;
-    $key =~ s#/#_#g;
-    $key =~ s#^\.#_#g;
-    die "no objects allowed" if ref($val) && ref($val) != 'HASH' && ref($val) != 'ARRAY';
+    my ($self, $key, $val, $recursion) = @_;
+    $key = encode_key($key);
+    die "no objects allowed" if ref($val) && ref($val) ne 'HASH' && ref($val) ne 'ARRAY';
+    Tie::Indexer::deindex_node($self,$val,$key);
     if (!defined($val)) {
-  	open(my $fh,'>',$self->{PATH}.".$$~".$key);
+  	open(my $fh,'>',$self->{PATH}.".$$~".$key) || die "Error while storing: $!";
 	close($fh);
-	rename($self->{PATH}.".$$~".$key,$self->{PATH}.$key) or $recursion or do {$self->DELETE($key);$self->STORE($key,$val,1);};
+	rename($self->{PATH}.".$$~".$key,$self->{PATH}.$key) or $recursion or do {$self->DELETE($_[1]);$self->STORE($_[1],$val,1);};
     } elsif (!ref($val)) {
-  	$val =~ s/\0//g;
-	$val = ' ' if !length($val);
-  	symlink($val,$self->{PATH}.".$$~".$key);
-	rename($self->{PATH}.".$$~".$key,$self->{PATH}.$key) or $recursion or do {$self->DELETE($key);$self->STORE($key,$val,1);};
+  	symlink(encode_value($val),$self->{PATH}.".$$~".$key) || die "Error while storing: $!";
+	rename($self->{PATH}.".$$~".$key,$self->{PATH}.$key) or $recursion or do {$self->DELETE($_[1]);$self->STORE($_[1],$val,1);};
     } elsif (ref($val) eq 'ARRAY' || ref($val) eq 'Tie::SymlinkTree::Array') {
   	my @tmp = @$val;
-	eval { tie @$val, 'Tie::SymlinkTree', $self->{PATH}.$key; };
-	if (!$recursion && $@) {$self->DELETE($key);$self->STORE($key,$val,1);}
+	eval { tie @$val, ref($self), $self->{PATH}.$key; };
+	if (!$recursion && $@) {$self->DELETE($key);$self->STORE($_[1],$val,1);}
 	@$val = @tmp;
     } else {
   	my %tmp = %$val;
-	eval { tie %$val, 'Tie::SymlinkTree', $self->{PATH}.$key; };
-	if (!$recursion && $@) {$self->DELETE($key);$self->STORE($key,$val,1);}
+	eval { tie %$val, ref($self), $self->{PATH}.$key; };
+	if (!$recursion && $@) {$self->DELETE($key);$self->STORE($_[1],$val,1);}
 	%$val = %tmp;
     }
+    Tie::Indexer::index_node($self,$val,$key);
 }
 
 
 sub DELETE {
   my ($self, $key) = @_;
-  $key =~ s#/#_#g;
-  $key =~ s#^\.#_#g;
+  $key = encode_key($key);
   my $val = $self->FETCH($key);
+  Tie::Indexer::deindex_node($self,$val,$key);
   if (UNIVERSAL::isa($val,'ARRAY')) {
   	my @tmp = @$val;
 	for my $i (0..$#tmp) {
 	    $tmp[$i] = delete $val->[$i];
 	}
 	$val = \@tmp;
+	unlink $self->{PATH}.$key."/.array";
   } elsif (UNIVERSAL::isa($val,'HASH')) {
   	my %tmp = %$val;
 	for my $k (keys %tmp) {
 	    $tmp{$k} = delete $val->{$k};
 	}
 	$val = \%tmp;
+  } else {
+        if (substr($self->id,0,1) ne '.' && -d $self->{PATH}."../.index-$key") {
+	    my $path = $self->{PATH};
+	    $path =~ s#[^/]*/$##;
+	    tie my %index, ref($self), $path.".index-$key/";
+	    delete $index{$val}{$self->id};
+	}
   }
   unlink $self->{PATH}.$key;
   rmdir $self->{PATH}.$key;
   return $val;
 }
 
+sub _clear {
+  my ($dir) = @_;
+  die "empty directory" unless $dir;
+  my $dh;
+  opendir($dh,$dir);
+  while (defined (my $subdir = readdir($dh))) {
+  	next if ($subdir eq '.' || $subdir eq '..');
+	unlink($dir.$subdir) or do {
+		_clear($dir.$subdir."/");
+		rmdir($dir.$subdir);
+	}
+  }
+  closedir($dh);
+}
+
 sub CLEAR {
   my ($self) = @_;
   $self->lock;
-  unlink(glob($self->{PATH}."*"));
-  rmdir(glob($self->{PATH}."*"));
+  _clear($self->{PATH});
   $self->unlock;
 }
 
 sub EXISTS {
   my ($self, $key) = @_;
-  $key =~ s#/#_#g;
-  $key =~ s#^\.#_#g;
+  $key = encode_key($key);
   return -e $self->{PATH}.$key || -l $self->{PATH}.$key;
 }
 
@@ -140,7 +209,7 @@ sub FIRSTKEY {
   $self->{HANDLE} = $dh;
   my $entry;
   while (defined ($entry = readdir($self->{HANDLE}))) {
-    return $entry unless (substr($entry,0,1) eq '.');
+    return decode_key($entry) unless (substr($entry,0,1) eq '.');
   }
   return;
 }
@@ -150,7 +219,7 @@ sub NEXTKEY {
   my ($self) = @_;
   my $entry;
   while (defined ($entry = readdir($self->{HANDLE}))) {
-    return $entry unless (substr($entry,0,1) eq '.');
+    return decode_key($entry) unless (substr($entry,0,1) eq '.');
   }
   return;
 }
@@ -241,15 +310,19 @@ sub SPLICE {
 
 sub lock {
   my ($self) = @_;
-  my $i = 0;
-  while (symlink($$,$self->{PATH}.".lock") && $i++ < 10) {
-  	sleep(1);
+  if (!$self->{locked}++) {
+	  my $i = 0;
+	  while (!symlink($$,$self->{PATH}.".lock") && $i++ < 40) {
+		select('','','',.25);
+	  }
   }
 }
 
 sub unlock {
   my ($self) = @_;
-  unlink($self->{PATH}.".lock");
+  if (!--$self->{locked}) {
+	  unlink($self->{PATH}.".lock");
+  }
 }
 
 sub id {
@@ -257,36 +330,23 @@ sub id {
     return ($self->{PATH} =~ m{/([^/]+)/$})[0];
 }
 
-sub search {
-    my ($self,$code) = @_;
-    my $key = $self->FIRSTKEY;
-    if (wantarray) {
-	my @res;
-	while (defined $key) {
-	    my $val = $self->FETCH($key);
-	    local $_ = $val;
-	    push @res, $val if $code->();
-	    $key = $self->NEXTKEY;
-	}
-	return @res
-    } else {
-	while (defined $key) {
-	    my $val = $self->FETCH($key);
-	    local $_ = $val;
-	    return $val if $code->();
-	    $key = $self->NEXTKEY;
-	}
-	return undef;
-    }
+sub _get_index {
+	my ($tie) = @_;
+	tie my %index, ref($tie), $tie->{PATH}.".index/";
+	return \%index;
 }
 
-1;
+BEGIN {
+	*search = \&Tie::Indexer::search;
+}
 
+no warnings;
+"Dahut!";
 __END__
 
 =head1 NAME
 
-Tie::SymlinkTree - interface to a directory tree of symlinks
+Tie::SymlinkTree - Prototype SQL-, Class::DBI- or Tie::*-using apps by storing data in a directory of symlinks
 
 =head1 SYNOPSIS
 
@@ -296,17 +356,31 @@ Tie::SymlinkTree - interface to a directory tree of symlinks
                                      # with contents "some text"
  $hash{'bar'} = "some beer";
  $hash{'two'} = [ "foo", "bar", "baz" ];
-  
+ $hash{'three'} = {
+   one => { value => 1, popularity => 'high'},
+   two => { value => 2, popularity => 'medium'},
+   four => { value => 4, popularity => 'low'},
+   eleven => { value => 11, popularity => 'medium'},
+ };
+
  # Warning: experimental and subject to change without notice:
  my @entries = tied(%hash)->search(sub { m/some/ }); # returns ("some text","some beer")
  my $firstmatch = $hash{'two'}->search(sub { m/b/ }); # returns "bar"
- print $firstmatch->id; # prints out "1", as it is element nr. 1
- 
+ my @result1 = $hash{'three'}->search('popularity','medium'); # returns ($hash{'three'}{'two'}, $hash{'three'}{'eleven'})
+ my @result2 = $hash{'three'}->search('popularity','=','medium'); # the same
+ my @result3 = $hash{'three'}->search('popularity',sub { $_[0] eq $_[1] },'medium'); # the same
+ print $hash{'two'}->id; # prints out "two"
+
 =head1 DESCRIPTION
 
 The Tie::SymlinkTree module is a TIEHASH/TIEARRAY interface which lets you tie a
 Perl hash or array to a directory on the filesystem.  Each entry in the hash
-represents a symlink in the directory.
+represents a symlink in the directory. Nested arrays and hashes are represented as
+sugbdirectories.
+
+For applications with small storage requirements, this module is perfectly capable of
+production usage. For example, web applications with less than a few hundred users
+should work great with this module.
 
 To use it, tie a hash to a directory:
 
@@ -325,16 +399,22 @@ lots of keys/array elements).
 
 =head1 CAVEATS
 
-C<Tie::SymlinkTree> is restricted in what it can store: Keys may not
-contain "/" or start with a dot, values may not contain "\0" and are
-limited in length, depending on OS limits. You may store scalars, hashrefs
-and arrayrefs, these will be transparently mapped to subdirs as neccessary,
-nested as deeply as you wish, but no objects are allowed. (Order me a pizza
-to get any of these missing features ;-)
+C<Tie::SymlinkTree> hashes behave 99% like classic perl hashes. Key ordering
+differs, and may also depend on the order of insertion. Moreover, two distinct
+hashes with equal contents may differ in key order.
+
+C<Tie::SymlinkTree> is restricted in what it can store: Values are
+limited in length, depending on OS limits (modern Linux boxes can
+store 4095 bytes, older systems might only support 256). Scalars, hashrefs
+and arrayrefs will be transparently mapped to subdirs as neccessary,
+nested as deeply as you wish, but no objects are allowed.
 
 This module will probably only work on UNIXish systems.
 
 How fast are ties? I can't tell. That is the most important bottleneck left.
+Searches over more than a few hundred entries are slow if you don't use indexing.
+If you tend to do many different complex queries, you should switch to something
+SQL-based.
 
 =head1 RATIONALE
 
@@ -351,13 +431,24 @@ hash data in one big chunk. C<Tie::SymlinkTree> avoids this bottleneck and sourc
 of bugs by only using atomic OS primitives on individual keys. Locking is not
 completely avoidable, but reduces to a minimum.
 
-The result is a reasonably fast module that scales very nicely. One day I may
-write an API-compatible counterpart that uses SQL as storage, then you'd get an
-easy upgrade path.
+TODO: the next paragraphs talk about experimental stuff and/or stuff not yet implemented.
+Calling this release version 1.0 refers to the tie syntax: It is stable and working as
+expected, as plain-hash-compatible as it can get.
+
+The primary purpose is to prototype apps quickly through very easy setup (nothing but a
+writable location is needed), good performance and several upgrade paths: depending on
+the interface you use, it's easy to model apps using plain DBI, Class::DBI, or just
+any Tie-interface of your liking. Just exchange your objects to "the real thing" and you
+are set.
+
+Additionally, since Tie::SymlinkTree offers several APIs at once, you can
+upgrade your prototypes' code without messy storage conversion steps: Write a quick
+CGI on tied hashes, upgrade to a decent DBI-based application when complexity raises,
+and model the final application using Class::DBI - all with the same storage.
 
 =head1 AUTHOR and LICENSE
 
-Copyright (C) 2004, J�rg Walter.
+Copyright (C) 2004, JÃ¶rg Walter
 
 This plugin is licensed under either the GNU GPL Version 2, or the Perl Artistic
 License.

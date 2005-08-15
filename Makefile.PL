@@ -1,11 +1,10 @@
 use ExtUtils::MakeMaker;
-# See lib/ExtUtils/MakeMaker.pm for details of how to influence
-# the contents of the Makefile that is written.
+use utf8;
 BEGIN { require 5.006; }
 
 WriteMakefile(
     'NAME'          => 'Tie::SymlinkTree',
-    'AUTHOR'	    => 'J�rg Walter <jwalt@cpan.org>',
+    'AUTHOR'	    => 'JÃ¶rg Walter <jwalt@cpan.org>',
     'ABSTRACT'	    => 'fast and multi-process-safe persistent storage',
     'VERSION_FROM'  => 'lib/Tie/SymlinkTree.pm', # finds $VERSION
     'PREREQ_PM'     => { },
