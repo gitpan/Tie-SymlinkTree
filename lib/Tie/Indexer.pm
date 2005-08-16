@@ -6,11 +6,12 @@ our $VERSION="0.1";
 
 BEGIN {
 	no strict;
+	no warnings;
 	use constant Equals => do { package main; sub { $_[0] eq $_[1] } };
 	use constant Not => do { package main; sub { !exists $_[1]->{$_[0]}; } };
 	use constant Exists => do { package main; sub { exists $_[0]->{$_[1]}; } };
-	use constant IndexSimple => do { package main; sub { Tie::SymlinkTree::Indexer::get_value(@_); } };
-	use constant IndexExists => do{ package main; sub { keys %{Tie::SymlinkTree::Indexer::get_value(@_)}; } };
+	use constant IndexSimple => do { package main; sub { Tie::Indexer::get_value(@_); } };
+	use constant IndexExists => do{ package main; sub { keys %{Tie::Indexer::get_value(@_)}; } };
 }
 
 my %operators = (
@@ -37,7 +38,7 @@ my %indexers = (
 
 sub get_value {
 	my ($tie, $expr, $node) = @_;
-	return undef if !defined $expr || $expr eq '';
+	return $node if !defined $expr || $expr eq '';
 	my ($prefix) = ($expr =~ m/^([a-z]+);/);
 	$expr =~ s/^[a-z]+;//;
 	my @path = split("/",$expr);
@@ -69,6 +70,7 @@ sub deindex_node {
 sub index_node_single {
 	my ($tie, $node, $nodeid, $index) = @_;
 	if ($$index[3]) {
+		no warnings 'uninitialized';
 		$$index[0]{$_}{$nodeid} = undef foreach ($$index[3]->($tie,$$index[2],$node,$$index[0]));
 	} else {
 		foreach my $value ($$index[4]->($tie,$$index[2],$node,$$index[0])) {
@@ -87,12 +89,15 @@ sub index_node {
 sub get_indices {
 	my ($tie) = @_;
 	my @res;
-	my $index = $tie->_get_index($tie);
+	my $index = $tie->_get_index() || {};
 	while (my ($expr, $eindex) = each %$index) {
 		next if $expr =~ m/^\x{200b}[^\x{200b}]/;
 		$expr =~ s/^\x{200b}\x{200b}/\x{200b}/;
+		my $values = eval "no strict; package main; return sub ".$$eindex{"\x{200b}values"} if exists $$eindex{"\x{200b}values"};
+		$values ||= do { no strict; package main; sub { keys %{$_[3]} } };
 		while (my ($operator, $oindex) = each %$eindex) {
-			push @res, [$oindex, eval "no strict; package main; return sub ".$operator, $expr, eval "no strict; package main; return sub ".$$index{"\x{200b}indexers"}{$operator}, eval("no strict; package main; return sub ".$$eindex{"\x{200b}values"})||do { no strict; package main; sub { keys %{$_[3]} } }];
+			my $indexer = eval "no strict; package main; return sub ".$$index{"\x{200b}indexers"}{$operator} if exists $$index{"\x{200b}indexers"}{$operator};
+			push @res, [$oindex, eval "no strict; package main; return sub ".$operator, $expr, $indexer, $values];
 		}
 	}
 	return @res;
@@ -101,7 +106,8 @@ sub get_indices {
 sub get_index {
 	my ($tie, $expr, $operator, $force) = @_;
 	$operator = code2text($operator);
-	my $index = $tie->_get_index(@_);
+	my $index = $tie->_get_index() || return undef;
+	$expr = '' if (!defined $expr);
 	$expr =~ s/^\x{200b}/\x{200b}\x{200b}/;
 	return undef if (!$force && (!exists $$index{$expr} || !exists $$index{$expr}{$operator}));
 	return $$index{$expr}{$operator};
@@ -115,7 +121,7 @@ sub add_index {
 	$indexer = code2text($indexer);
 	$values = code2text($values);
 
-	my $index = $tie->_get_index($tie);
+	my $index = $tie->_get_index(1);
 	$$index{"\x{200b}indexers"}{$operator} ||= $indexer if (defined $indexer);
 	$expr =~ s/^\x{200b}/\x{200b}\x{200b}/;
 	$$index{$expr} ||= {};
@@ -135,7 +141,9 @@ sub search {
 		undef $base;
 	}
 
-	if (!ref($expr)) {
+	$expr = $operators{$expr} if (exists $operators{$expr});
+
+	if (!ref($expr) || ref($expr) ne 'CODE') {
 		$value = shift;
 		if (ref($value) eq 'CODE') {
 			$operator = $value;
@@ -158,6 +166,7 @@ sub search {
 			# perhaps some heuristic: if (keys %$base > keys %$index)
 			my %res;
 			foreach my $exp (keys %$index) {
+				local $_ = $exp;
 				if ($operator->($exp,$value)) {
 					$res{$_} ||= $tie->FETCH($_) foreach (keys %{$$index{$exp}});
 					last if !wantarray;
@@ -176,8 +185,12 @@ sub search {
 	}
 
 	if ($operator eq Not) {
-		$value = { map { ($_ => undef) } search($tie,$base,@_) };
-		undef @_;
+		if (!$expr) {
+			return search($tie,$base,@_,{ %$base },Not);
+		} else {
+			delete $$expr{$_} foreach (keys %$base);
+			return search($tie,$expr);
+		}
 	}
 	if ($index) {
 		if (defined ($index = $$index{$value})) {
@@ -197,15 +210,16 @@ sub search {
 		my $key = $tie->FIRSTKEY;
 		while (defined $key) {
 			my $node = $tie->FETCH($key);
-			my $exp = get_value($tie,$expr,$node);
-			return $node if $operator->($exp,$value) && search($tie,{$key => $node},@_);
+			local $_ = get_value($tie,$expr,$node);
+			return $node if $operator->($_,$value) && search($tie,{$key => $node},@_);
 			$key = $tie->NEXTKEY;
 		}
 		return undef;
 	}
 
 	while (my ($key, $node) = each %$base) {
-		delete $$base{$key} if !$operator->(get_value($tie,$expr,$node),$value);
+		local $_ = get_value($tie,$expr,$node);
+		delete $$base{$key} if !$operator->($_,$value);
 	}
 	return search($tie,$base,@_);
 }

@@ -4,7 +4,7 @@ use bytes;
 use Encode;
 use Tie::Indexer;
 
-our $VERSION = '1.0';
+our $VERSION = '1.1';
 
 {
     package Tie::SymlinkTree::Array;
@@ -43,7 +43,7 @@ sub decode_value {
 sub encode_key {
   no bytes;
   my $key = shift;
-  return undef if !defined $key;
+  $key = '' if !defined $key;
   $key =~ s#\x{feff}#\x{feff}feff#g;
   $key =~ s#\x{0000}#\x{feff}0000#g;
   $key =~ s#/#\x{feff}002f#g;
@@ -331,7 +331,8 @@ sub id {
 }
 
 sub _get_index {
-	my ($tie) = @_;
+	my ($tie, $create) = @_;
+	return undef if (!$create && ! -d $tie->{PATH}.".index/");
 	tie my %index, ref($tie), $tie->{PATH}.".index/";
 	return \%index;
 }
